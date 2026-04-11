@@ -8,6 +8,15 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 
+function getAllowedOrigins() {
+  const rawOrigins = process.env.FRONTEND_URLS ?? process.env.FRONTEND_URL ?? "";
+
+  return rawOrigins
+    .split(",")
+    .map(origin => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
@@ -34,6 +43,27 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+  const allowedOrigins = new Set(getAllowedOrigins());
+
+  app.use((req, res, next) => {
+    const requestOrigin = req.headers.origin?.trim().replace(/\/$/, "");
+
+    if (requestOrigin && allowedOrigins.has(requestOrigin)) {
+      res.header("Access-Control-Allow-Origin", requestOrigin);
+      res.header("Access-Control-Allow-Credentials", "true");
+      res.header("Vary", "Origin");
+      res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-trpc-source");
+      res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    }
+
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+
+    next();
+  });
+
   // Restrict body sizes to reduce DoS blast radius.
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ limit: "2mb", extended: true }));
