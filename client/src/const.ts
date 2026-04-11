@@ -9,7 +9,7 @@ export const getApiBaseUrl = () => {
   if (normalizedConfiguredBaseUrl) {
     return normalizedConfiguredBaseUrl;
   }
-
+//to trigger redployment
   return window.location.origin;
 };
 
