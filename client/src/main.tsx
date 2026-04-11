@@ -5,7 +5,7 @@ import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
-import { getLoginUrl } from "./const";
+import { getApiBaseUrl, getLoginUrl } from "./const";
 import "./index.css";
 
 const analyticsEndpoint = import.meta.env.VITE_ANALYTICS_ENDPOINT as string | undefined;
@@ -22,6 +22,7 @@ if (analyticsEndpoint && analyticsWebsiteId && typeof document !== "undefined") 
 }
 
 const queryClient = new QueryClient();
+const trpcEndpointUrl = `${getApiBaseUrl()}/api/trpc`;
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
@@ -53,7 +54,7 @@ queryClient.getMutationCache().subscribe(event => {
 const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
-      url: "/api/trpc",
+      url: trpcEndpointUrl,
       transformer: superjson,
       fetch(input, init) {
         return globalThis.fetch(input, {
