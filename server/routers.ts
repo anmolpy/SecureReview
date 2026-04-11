@@ -142,6 +142,118 @@ function stripMarkdownFences(text: string): string {
     .trim();
 }
 
+const auditResultSchema = z.object({
+  language: z.string(),
+  summary: z.string(),
+  overall_risk: z.enum(["Critical", "High", "Medium", "Low", "Clean"]),
+  findings: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      severity: z.enum(["Critical", "High", "Medium", "Low", "Informational"]),
+      line_hint: z.string().nullable(),
+      description: z.string(),
+      remediation: z.string(),
+    })
+  ),
+});
+
+function extractTextFromLLMContent(content: unknown): string {
+  if (typeof content === "string") return content;
+
+  if (!Array.isArray(content)) return JSON.stringify(content ?? "");
+
+  const textParts = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (
+        part &&
+        typeof part === "object" &&
+        "type" in part &&
+        (part as { type?: unknown }).type === "text" &&
+        "text" in part
+      ) {
+        const text = (part as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .filter(Boolean);
+
+  if (textParts.length > 0) {
+    return textParts.join("\n");
+  }
+
+  return JSON.stringify(content);
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseAuditJson(rawText: string) {
+  const cleaned = stripMarkdownFences(rawText);
+  const candidates = [cleaned];
+
+  const extracted = extractFirstJsonObject(cleaned);
+  if (extracted && extracted !== cleaned) {
+    candidates.push(extracted);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      const validated = auditResultSchema.safeParse(parsed);
+      if (validated.success) {
+        return validated.data;
+      }
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return null;
+}
+
 // --- tRPC Router ---
 
 export const appRouter = router({
@@ -336,7 +448,7 @@ export const appRouter = router({
           }));
 
           const content = llmResponse.result.choices?.[0]?.message?.content;
-          rawText = typeof content === "string" ? content : JSON.stringify(content);
+          rawText = extractTextFromLLMContent(content);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : "LLM invocation failed";
           upsertAuditStatus(requestId, (current) => ({
@@ -357,25 +469,9 @@ export const appRouter = router({
           });
         }
 
-        const cleaned = stripMarkdownFences(rawText);
+        const result = parseAuditJson(rawText);
 
-        let result: {
-          language: string;
-          summary: string;
-          overall_risk: string;
-          findings: Array<{
-            id: string;
-            title: string;
-            severity: string;
-            line_hint: string | null;
-            description: string;
-            remediation: string;
-          }>;
-        };
-
-        try {
-          result = JSON.parse(cleaned);
-        } catch {
+        if (!result) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
             message: "Failed to parse AI response as JSON. Please try again.",
