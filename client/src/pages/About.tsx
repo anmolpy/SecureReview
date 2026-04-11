@@ -28,20 +28,20 @@ const SEVERITY_COLORS: Record<string, { text: string; bg: string; border: string
 const HOW_IT_WORKS = [
   {
     icon: Key,
-    title: 'API Key Authentication',
-    description: 'You provide your own Google Gemini API key. It is stored only in your browser session memory and never transmitted to any third-party server.',
+    title: 'Provider Authentication',
+    description: 'You configure provider API keys for your selected model endpoints. Secrets are used for analysis requests and not exposed in public UI content.',
     color: '#58a6ff',
   },
   {
     icon: FileCode,
     title: 'Code Submission',
-    description: 'Your code is sent directly from your browser to the Gemini API endpoint with a carefully crafted security audit prompt.',
+    description: 'Your code is submitted to the configured AI inference endpoint with a structured security audit prompt.',
     color: '#c084fc',
   },
   {
     icon: Cpu,
     title: 'AI Analysis',
-    description: 'Gemini 2.0 Flash analyzes the code for common vulnerability patterns, focusing on OWASP Top 10 and CWE-listed weaknesses.',
+    description: 'The selected model analyzes code for common vulnerability patterns, focusing on OWASP Top 10 and CWE-listed weaknesses.',
     color: '#4ade80',
   },
   {
@@ -105,13 +105,13 @@ export default function About() {
             }}
           >
             <p className="text-sm leading-relaxed mb-4" style={{ color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
-              <strong style={{ color: '#e2e8f0' }}>SecureReview</strong> is an AI-powered secure code auditor built on Google Gemini 2.0 Flash.
+              <strong style={{ color: '#e2e8f0' }}>SecureReview</strong> is an AI-powered secure code auditor built for multi-provider, multi-model analysis.
               It allows developers and security engineers to quickly scan code snippets for common security vulnerabilities
               without setting up complex SAST tooling.
             </p>
             <p className="text-sm leading-relaxed mb-4" style={{ color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
-              The tool runs entirely in your browser — your code is sent directly to the Gemini API using your own API key.
-              No data is stored on any server, and your API key is kept only in your browser's session memory.
+              The tool supports multiple model providers and fallback routing so analysis can continue even when a provider is unavailable.
+              Configure your API credentials in environment settings and deploy securely without hardcoding secrets.
             </p>
             <p className="text-sm leading-relaxed" style={{ color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
               SecureReview supports Python, JavaScript, C/C++, Java, SQL, Bash, and more with automatic language detection.
@@ -182,8 +182,8 @@ export default function About() {
                 Privacy & Security
               </h3>
               <p className="text-sm leading-relaxed" style={{ color: '#64748b', fontFamily: 'Inter, sans-serif' }}>
-                Your code and API key are never stored on any server. All processing happens directly between
-                your browser and the Google Gemini API. Scan history is kept only in your browser's session
+                Your code and API keys should be handled through secure runtime configuration. Analysis requests
+                are sent to your configured provider endpoints, while scan history remains in your browser session
                 memory and is cleared when you close the tab.
               </p>
             </div>

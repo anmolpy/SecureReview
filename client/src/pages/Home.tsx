@@ -30,7 +30,7 @@ const FEATURES = [
   {
     icon: Zap,
     title: 'Instant AI Analysis',
-    description: 'Powered by Google Gemini 2.0 Flash — get comprehensive security analysis in seconds.',
+    description: 'Powered by flexible multi-model AI routing — get comprehensive security analysis in seconds.',
     color: '#facc15',
   },
   {
@@ -91,7 +91,7 @@ export default function Home() {
             }}
           >
             <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-            Powered by Google Gemini 2.0 Flash
+            Powered by Multi-Model AI
           </div>
 
           {/* Shield icon */}
@@ -127,7 +127,7 @@ export default function Home() {
             className="text-base sm:text-lg max-w-2xl mx-auto mb-10 leading-relaxed animate-slide-in-up delay-400"
             style={{ color: '#64748b', fontFamily: 'Inter, sans-serif' }}
           >
-            Paste your code and let Gemini AI identify vulnerabilities, classify CWEs,
+            Paste your code and let the AI model pipeline identify vulnerabilities, classify CWEs,
             assign severity ratings, and provide actionable remediation advice — all in seconds.
           </p>
 
@@ -214,7 +214,7 @@ export default function Home() {
               Everything you need to audit code
             </h2>
             <p className="text-base max-w-xl mx-auto" style={{ color: '#64748b', fontFamily: 'Inter, sans-serif' }}>
-              SecureReview combines the power of Gemini AI with security best practices
+              SecureReview combines flexible AI model selection with security best practices
               to deliver comprehensive vulnerability analysis.
             </p>
           </div>
@@ -289,7 +289,7 @@ export default function Home() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {[
               { step: '01', title: 'Paste your code', desc: 'Select the language and paste the code you want to audit into the editor.' },
-              { step: '02', title: 'AI analyzes it', desc: 'Gemini 2.0 Flash scans for injection flaws, hardcoded secrets, insecure crypto, and more.' },
+              { step: '02', title: 'AI analyzes it', desc: 'The active model scans for injection flaws, hardcoded secrets, insecure crypto, and more.' },
               { step: '03', title: 'Review findings', desc: 'Get a full report with CWE IDs, severity ratings, and step-by-step remediation advice.' },
             ].map(({ step, title, desc }) => (
               <div key={step} className="relative">
@@ -380,7 +380,7 @@ export default function Home() {
           fontSize: '0.8rem',
         }}
       >
-        <p>SecureReview — AI-Powered Secure Code Auditor. Built with Google Gemini 2.0 Flash.</p>
+        <p>SecureReview — AI-Powered Secure Code Auditor. Model-agnostic and provider-flexible.</p>
       </footer>
     </div>
   );
