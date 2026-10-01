@@ -498,6 +498,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeLLMResult> 
     return [model?.trim() || provider.defaultModel];
   };
 
+  let providerRequests = 0;
   for (const provider of providers) {
     for (const selectedModel of attemptModels(provider)) {
       const startTimestamp = Date.now();
@@ -554,10 +555,12 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeLLMResult> 
 
       for (let retry = 0; retry <= MAX_RETRIES_PER_MODEL; retry++) {
         try {
+          if (++providerRequests > 3) throw new Error("Provider attempt budget exhausted");
           response = await fetch(provider.apiUrl, {
             method: "POST",
             headers,
             body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(30_000),
           });
           networkError = null;
         } catch (err) {

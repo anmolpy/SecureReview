@@ -1,3 +1,4 @@
+import { acquireAnalyzeQuota } from "./analyze-quota";
 import { COOKIE_NAME } from "@shared/const";
 import { createHash, randomUUID } from "node:crypto";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -37,61 +38,20 @@ type AuditRunStatus = {
   updatedAt: number;
 };
 
-type AnalyzeRateLimitState = {
-  count: number;
-  windowStart: number;
-};
-
 const AUDIT_STATUS_TTL_MS = 10 * 60 * 1000;
 const auditStatusStore = new Map<string, AuditRunStatus>();
-const ANALYZE_WINDOW_MS = 60_000;
-const ANALYZE_MAX_REQUESTS_PER_WINDOW = 12;
-const analyzeRateLimitStore = new Map<string, AnalyzeRateLimitState>();
 
 function resolveClientKey(ctx: TrpcContext): string {
-  const ip =
-    ctx.req.ip ||
-    ctx.req.socket?.remoteAddress ||
-    "unknown-ip";
+  const ip = ctx.req.ip || ctx.req.socket?.remoteAddress || "unknown-ip";
   const userAgent = String(ctx.req.headers["user-agent"] || "unknown-ua");
   return createHash("sha256").update(`${ip}|${userAgent}`).digest("hex");
 }
 
-function consumeAnalyzeQuota(clientKey: string): boolean {
-  const now = Date.now();
-  const current = analyzeRateLimitStore.get(clientKey);
-
-  if (!current || now - current.windowStart >= ANALYZE_WINDOW_MS) {
-    analyzeRateLimitStore.set(clientKey, {
-      count: 1,
-      windowStart: now,
-    });
-    return true;
-  }
-
-  if (current.count >= ANALYZE_MAX_REQUESTS_PER_WINDOW) {
-    return false;
-  }
-
-  analyzeRateLimitStore.set(clientKey, {
-    ...current,
-    count: current.count + 1,
-  });
-  return true;
-}
-
 const cleanupStaleAuditStatuses = () => {
   const cutoff = Date.now() - AUDIT_STATUS_TTL_MS;
-  for (const [requestId, status] of auditStatusStore.entries()) {
+  for (const [requestId, status] of Array.from(auditStatusStore.entries())) {
     if (status.updatedAt < cutoff) {
       auditStatusStore.delete(requestId);
-    }
-  }
-
-  // Opportunistic cleanup for limiter state to keep memory bounded.
-  for (const [clientKey, state] of analyzeRateLimitStore.entries()) {
-    if (Date.now() - state.windowStart >= ANALYZE_WINDOW_MS * 2) {
-      analyzeRateLimitStore.delete(clientKey);
     }
   }
 };
@@ -164,7 +124,7 @@ function extractTextFromLLMContent(content: unknown): string {
   if (!Array.isArray(content)) return JSON.stringify(content ?? "");
 
   const textParts = content
-    .map((part) => {
+    .map(part => {
       if (typeof part === "string") return part;
       if (
         part &&
@@ -259,7 +219,7 @@ function parseAuditJson(rawText: string) {
 export const appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -285,7 +245,7 @@ export const appRouter = router({
     analyze: publicProcedure
       .input(
         z.object({
-          code: z.string().min(1, "Code is required").max(100_000),
+          code: z.string().min(1, "Code is required").max(30_000),
           language: z.string().default("Auto-detect"),
           requestId: z.string().min(8).max(128).optional(),
         })
@@ -294,96 +254,173 @@ export const appRouter = router({
         cleanupStaleAuditStatuses();
 
         const clientKey = resolveClientKey(ctx);
-        if (!consumeAnalyzeQuota(clientKey)) {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: "Rate limit exceeded. Please wait before starting another analysis.",
-          });
-        }
 
         const requestId = input.requestId ?? randomUUID();
-        const existingStatus = auditStatusStore.get(requestId);
-        if (existingStatus && existingStatus.ownerKey !== clientKey) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "Invalid analysis request identifier.",
-          });
-        }
-
-        auditStatusStore.set(requestId, {
-          requestId,
-          ownerKey: clientKey,
-          status: "running",
-          message: "Starting analysis...",
-          currentProvider: null,
-          currentModel: null,
-          attempts: [],
-          updatedAt: Date.now(),
-        });
-
-        const prompt = buildPrompt(input.code, input.language);
-
-        let rawText: string;
-
+        // Only the server-resolved peer IP participates in quotas. User-Agent
+        // remains a status ownership hint, never a rate-limit identity.
+        const release = await acquireAnalyzeQuota(
+          ctx.req.ip || ctx.req.socket?.remoteAddress || "unknown"
+        );
         try {
-          const llmResponse = await invokeLLM({
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are a secure code auditor. Respond ONLY with valid JSON. No markdown fences, no extra text.",
-              },
-              { role: "user", content: prompt },
-            ],
-            response_format: {
-              type: "json_schema",
-              json_schema: {
-                name: "audit_result",
-                strict: true,
-                schema: {
-                  type: "object",
-                  properties: {
-                    language: { type: "string", description: "Detected programming language" },
-                    summary: { type: "string", description: "Brief summary of the audit" },
-                    overall_risk: {
-                      type: "string",
-                      enum: ["Critical", "High", "Medium", "Low", "Clean"],
-                      description: "Overall risk level",
-                    },
-                    findings: {
-                      type: "array",
-                      items: {
-                        type: "object",
-                        properties: {
-                          id: { type: "string", description: "CWE ID e.g. CWE-78" },
-                          title: { type: "string", description: "Short title of the finding" },
-                          severity: {
-                            type: "string",
-                            enum: ["Critical", "High", "Medium", "Low", "Informational"],
+          const existingStatus = auditStatusStore.get(requestId);
+          if (existingStatus && existingStatus.ownerKey !== clientKey) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Invalid analysis request identifier.",
+            });
+          }
+
+          auditStatusStore.set(requestId, {
+            requestId,
+            ownerKey: clientKey,
+            status: "running",
+            message: "Starting analysis...",
+            currentProvider: null,
+            currentModel: null,
+            attempts: [],
+            updatedAt: Date.now(),
+          });
+
+          const prompt = buildPrompt(input.code, input.language);
+
+          let rawText: string;
+
+          try {
+            const llmResponse = await invokeLLM({
+              maxTokens: 4096,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You are a secure code auditor. Respond ONLY with valid JSON. No markdown fences, no extra text.",
+                },
+                { role: "user", content: prompt },
+              ],
+              response_format: {
+                type: "json_schema",
+                json_schema: {
+                  name: "audit_result",
+                  strict: true,
+                  schema: {
+                    type: "object",
+                    properties: {
+                      language: {
+                        type: "string",
+                        description: "Detected programming language",
+                      },
+                      summary: {
+                        type: "string",
+                        description: "Brief summary of the audit",
+                      },
+                      overall_risk: {
+                        type: "string",
+                        enum: ["Critical", "High", "Medium", "Low", "Clean"],
+                        description: "Overall risk level",
+                      },
+                      findings: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            id: {
+                              type: "string",
+                              description: "CWE ID e.g. CWE-78",
+                            },
+                            title: {
+                              type: "string",
+                              description: "Short title of the finding",
+                            },
+                            severity: {
+                              type: "string",
+                              enum: [
+                                "Critical",
+                                "High",
+                                "Medium",
+                                "Low",
+                                "Informational",
+                              ],
+                            },
+                            line_hint: {
+                              type: ["string", "null"],
+                              description: "Approximate line or code snippet",
+                            },
+                            description: {
+                              type: "string",
+                              description: "Detailed description",
+                            },
+                            remediation: {
+                              type: "string",
+                              description: "How to fix it",
+                            },
                           },
-                          line_hint: {
-                            type: ["string", "null"],
-                            description: "Approximate line or code snippet",
-                          },
-                          description: { type: "string", description: "Detailed description" },
-                          remediation: { type: "string", description: "How to fix it" },
+                          required: [
+                            "id",
+                            "title",
+                            "severity",
+                            "line_hint",
+                            "description",
+                            "remediation",
+                          ],
+                          additionalProperties: false,
                         },
-                        required: ["id", "title", "severity", "line_hint", "description", "remediation"],
-                        additionalProperties: false,
                       },
                     },
+                    required: [
+                      "language",
+                      "summary",
+                      "overall_risk",
+                      "findings",
+                    ],
+                    additionalProperties: false,
                   },
-                  required: ["language", "summary", "overall_risk", "findings"],
-                  additionalProperties: false,
                 },
               },
-            },
-            onAttemptEvent: (event) => {
-              if (event.type === "attempt-start") {
-                upsertAuditStatus(requestId, (current) => ({
+              onAttemptEvent: event => {
+                if (event.type === "attempt-start") {
+                  upsertAuditStatus(requestId, current => ({
+                    ...current,
+                    status: "running",
+                    message: `Analyzing with ${event.provider} (${event.model})...`,
+                    currentProvider: event.provider,
+                    currentModel: event.model,
+                    attempts: [
+                      ...current.attempts,
+                      {
+                        provider: event.provider,
+                        model: event.model,
+                        status: "started",
+                        timestamp: event.timestamp,
+                      },
+                    ],
+                  }));
+                  return;
+                }
+
+                if (event.type === "attempt-failed") {
+                  upsertAuditStatus(requestId, current => ({
+                    ...current,
+                    status: "running",
+                    message: `Provider ${event.provider} failed, switching models...`,
+                    currentProvider: event.provider,
+                    currentModel: event.model,
+                    attempts: [
+                      ...current.attempts,
+                      {
+                        provider: event.provider,
+                        model: event.model,
+                        status: "failed",
+                        timestamp: event.timestamp,
+                        error: "Provider request failed",
+                      },
+                    ],
+                  }));
+                  return;
+                }
+
+                upsertAuditStatus(requestId, current => ({
                   ...current,
                   status: "running",
-                  message: `Analyzing with ${event.provider} (${event.model})...`,
+                  message: `Response ready from ${event.provider} (${event.model}).`,
                   currentProvider: event.provider,
                   currentModel: event.model,
                   attempts: [
@@ -391,111 +428,74 @@ export const appRouter = router({
                     {
                       provider: event.provider,
                       model: event.model,
-                      status: "started",
+                      status: "succeeded",
                       timestamp: event.timestamp,
                     },
                   ],
                 }));
-                return;
-              }
+              },
+            });
 
-              if (event.type === "attempt-failed") {
-                upsertAuditStatus(requestId, (current) => ({
-                  ...current,
-                  status: "running",
-                  message: `Provider ${event.provider} failed, switching models...`,
-                  currentProvider: event.provider,
-                  currentModel: event.model,
-                  attempts: [
-                    ...current.attempts,
-                    {
-                      provider: event.provider,
-                      model: event.model,
-                      status: "failed",
-                      timestamp: event.timestamp,
-                      error: event.error,
-                    },
-                  ],
-                }));
-                return;
-              }
+            upsertAuditStatus(requestId, current => ({
+              ...current,
+              status: "succeeded",
+              message: `Completed with ${llmResponse.provider} (${llmResponse.model}).`,
+              currentProvider: llmResponse.provider,
+              currentModel: llmResponse.model,
+            }));
 
-              upsertAuditStatus(requestId, (current) => ({
-                ...current,
-                status: "running",
-                message: `Response ready from ${event.provider} (${event.model}).`,
-                currentProvider: event.provider,
-                currentModel: event.model,
-                attempts: [
-                  ...current.attempts,
-                  {
-                    provider: event.provider,
-                    model: event.model,
-                    status: "succeeded",
-                    timestamp: event.timestamp,
-                  },
-                ],
-              }));
+            const content = llmResponse.result.choices?.[0]?.message?.content;
+            rawText = extractTextFromLLMContent(content);
+          } catch (err: unknown) {
+            const message = "Analysis failed. Please try again later.";
+            upsertAuditStatus(requestId, current => ({
+              ...current,
+              status: "failed",
+              message,
+            }));
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message,
+            });
+          }
+
+          if (!rawText) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Empty response from AI",
+            });
+          }
+
+          const result = parseAuditJson(rawText);
+
+          if (!result) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Failed to parse AI response as JSON. Please try again.",
+            });
+          }
+
+          // Sort findings by severity (Critical first)
+          if (result.findings && Array.isArray(result.findings)) {
+            result.findings.sort(
+              (a, b) =>
+                (SEVERITY_ORDER[a.severity] ?? 99) -
+                (SEVERITY_ORDER[b.severity] ?? 99)
+            );
+          }
+
+          return {
+            ...result,
+            analysis_meta: {
+              requestId,
+              provider: auditStatusStore.get(requestId)?.currentProvider,
+              model: auditStatusStore.get(requestId)?.currentModel,
+              attempts: auditStatusStore.get(requestId)?.attempts ?? [],
             },
-          });
-
-          upsertAuditStatus(requestId, (current) => ({
-            ...current,
-            status: "succeeded",
-            message: `Completed with ${llmResponse.provider} (${llmResponse.model}).`,
-            currentProvider: llmResponse.provider,
-            currentModel: llmResponse.model,
-          }));
-
-          const content = llmResponse.result.choices?.[0]?.message?.content;
-          rawText = extractTextFromLLMContent(content);
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : "LLM invocation failed";
-          upsertAuditStatus(requestId, (current) => ({
-            ...current,
-            status: "failed",
-            message,
-          }));
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message,
-          });
+          };
+        } finally {
+          release();
         }
-
-        if (!rawText) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Empty response from AI",
-          });
-        }
-
-        const result = parseAuditJson(rawText);
-
-        if (!result) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Failed to parse AI response as JSON. Please try again.",
-          });
-        }
-
-        // Sort findings by severity (Critical first)
-        if (result.findings && Array.isArray(result.findings)) {
-          result.findings.sort(
-            (a, b) =>
-              (SEVERITY_ORDER[a.severity] ?? 99) -
-              (SEVERITY_ORDER[b.severity] ?? 99)
-          );
-        }
-
-        return {
-          ...result,
-          analysis_meta: {
-            requestId,
-            provider: auditStatusStore.get(requestId)?.currentProvider,
-            model: auditStatusStore.get(requestId)?.currentModel,
-            attempts: auditStatusStore.get(requestId)?.attempts ?? [],
-          },
-        };
       }),
   }),
 });
