@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
+
+vi.mock("./_core/llm", () => ({ invokeLLM: vi.fn(async () => ({
+  provider: "test", model: "test", result: { choices: [{ message: { content: JSON.stringify({
+    language: "Python", summary: "Synthetic audit", overall_risk: "Clean", findings: []
+  }) } }] }
+})) }));
 
 function createPublicContext(): TrpcContext {
   return {
@@ -51,4 +57,16 @@ def run(cmd):
       expect(finding).toHaveProperty("remediation");
     }
   }, 30000); // 30s timeout for API call
+});
+
+
+it("does not allow User-Agent rotation to reset the endpoint quota", async () => {
+  for (let n = 0; n < 12; n++) {
+    const ctx = createPublicContext();
+    Object.assign(ctx.req, { ip: "198.51.100.40", headers: { "user-agent": `agent-${n}` } });
+    await appRouter.createCaller(ctx).audit.analyze({ code: "test" });
+  }
+  const ctx = createPublicContext();
+  Object.assign(ctx.req, { ip: "198.51.100.40", headers: { "user-agent": "new-agent" } });
+  await expect(appRouter.createCaller(ctx).audit.analyze({ code: "test" })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
 });
